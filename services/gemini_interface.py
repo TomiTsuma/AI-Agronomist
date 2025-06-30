@@ -50,3 +50,9 @@ def plot_summary(chemical: str, results: list, guides: list):
     response = model.generate_content(prompt)
     print(response)
     return response.text
+
+def history_summary(history: list, guides: list):
+    prompt = prompts['soil_history_summary_prompt'].format(str(history), str(guides))
+    response = model.generate_content(prompt)
+    print(response)
+    return response.text
