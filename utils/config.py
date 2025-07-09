@@ -17,3 +17,7 @@ def get_gemini_api_key():
 
 def get_gemini_model():
     return "gemini-2.0-flash"
+
+
+def get_dropbox_access_token():
+    return os.getenv("DROPBOX_ACCESS_TOKEN")

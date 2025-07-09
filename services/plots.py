@@ -1,11 +1,14 @@
 import pandas as pd
 import io
 import matplotlib.pyplot as plt
+import seaborn as sns
 from services.google_drive import upload_image_to_drive
+from services.dropbox import upload_image_to_dropbox
 from services.gemini_interface import plot_summary, history_summary
 import uuid
 import json
 import numpy as np
+
 
 
 def createPlots(results, guides):
@@ -36,45 +39,105 @@ def createPlots(results, guides):
             buf.close()
             res = {}
 
-            # res['image_url'] = upload_image_to_drive(image, str(uuid.uuid4())+".png")
-            plt.savefig(f"{chemical}_plot.png", format='png')
+            res['image_url'] = upload_image_to_dropbox(image_stream=image, image_name=str(uuid.uuid4())+".png")
+            # plt.savefig(f"{chemical}_plot.png", format='png')
             res['ai_summary'] = plot_summary(chemical, results=results_df[['Field Name', chemical]], guides=guides)
             output.append(res)
             return output
 
 def plotHistory(history_dict, guides):
     data = history_dict
-
+    chemicals = [ i['chemical_name'] for i in history_dict ]
+    data = history_dict 
     df = pd.DataFrame(data)
     df['result'] = [ i.replace(">","").replace("<","").strip() for i in df['result']]
     df['result'] = df['result'].astype(float)
     df['batch_date'] = pd.to_datetime(df['batch_date'])
 
-    pivot_df = df.pivot_table(
-        index='batch_date',
-        columns='chemical_name',
-        values='result',
-        aggfunc='mean' 
-    ).fillna(0)
+    df = df.sort_values('batch_date')
 
-    chemicals = pivot_df.columns
-    dates = pivot_df.index.strftime('%Y-%m-%d')
-    x = np.arange(len(dates)) 
-    bar_width = 0.1 
-    fig, ax = plt.subplots(figsize=(14, 6))
+    chemicals = df['chemical_name'].unique()
+    output = []
+    for chem in chemicals:
+        chem_guides = [guide for guide in guides if guide['chemical_name'] == "ph"]
+        subset = df[df['chemical_name'] == chem]
 
-    for i, chem in enumerate(chemicals):
-        ax.bar(x + i * bar_width, pivot_df[chem], width=bar_width, label=chem)
+        # Pivot: index = batch_date, columns = field_name, values = result
+        pivot_df = subset.pivot_table(
+            index='batch_date',
+            columns='field_name',
+            values='result'
+        ).fillna(0)
 
-    ax.set_xticks(x + bar_width * (len(chemicals) - 1) / 2)
-    ax.set_xticklabels(dates, rotation=45)
+        # Plotting setup
+        fields = pivot_df.columns
+        x = np.arange(len(pivot_df))  # positions for each date
+        width = 0.8 / len(fields)     # dynamic width based on number of fields
 
-    ax.set_xlabel("Batch Date")
-    ax.set_ylabel("Chemical Result")
-    ax.set_title("Grouped Chemical Results Over Time")
-    ax.legend(title="Chemical", bbox_to_anchor=(1.02, 1), loc='upper left')
+        fig, ax = plt.subplots(figsize=(12, 5))
+        
+        for i, field in enumerate(fields):
+            ax.bar(x + i*width, pivot_df[field], width=width, label=field)
+
+        ax.set_xticks(x + width * (len(fields) - 1) / 2)
+        ax.set_xticklabels(pivot_df.index.strftime('%Y-%m-%d'), rotation=45)
+        ax.set_title(f'{chem} Levels Across Fields Over Time')
+        ax.set_xlabel('Batch Date')
+        ax.set_ylabel('Result')
+        plt.yticks([ i['class_upper_limit'] for i in chem_guides], [i['status_name'] for i in chem_guides])
+        plt.axhline(y=[ i['class_upper_limit'] for i in chem_guides if i['status_name'] == "very low"][0], color='red', linestyle='--')
+        plt.axhline(y=[ i['class_upper_limit'] for i in chem_guides if i['status_name'] == "very high"][0], color='blue', linestyle='--')
+        ax.legend(title='Field Name', bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.tight_layout()
+        # plt.show()
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png')
+        plt.close()
+        buf.seek(0)
+        image = buf.getvalue()
+        buf.close()
+        res = {}
+
+        res['image_url'] = upload_image_to_dropbox(image_stream=image, image_name=str(uuid.uuid4())+".png")
+        # plt.savefig(f"{chem}_plot.png", format='png')
+        res['ai_summary'] = history_summary(history=history_dict, guides=guides)
+        output.append(res)
+        return output
+    
+def plotRecommendations(recommendations_dict):
+    recommends_df = pd.DataFrame(recommendations_dict)
+    numeric_cols = []
+    for col in recommends_df.columns:
+        try:
+            pd.to_numeric(recommends_df[col], errors='raise')
+            numeric_cols.append(col)
+        except Exception:
+            continue
+
+    numeric_cols
+
+    numeric_cols.append("Field")
+    recommends_df = recommends_df[numeric_cols].replace("",np.nan).dropna(axis=1, how='all')
+
+    # Convert to DataFrame
+    df = recommends_df.copy(deep=True)
+
+    # Melt the dataframe to long format
+    df_melted = df.melt(id_vars="Field", var_name="Input Type", value_name="Input Amount")
+
+    # Drop NaNs
+    df_melted.dropna(subset=["Input Amount"], inplace=True)
+
+    # Plot grouped bar chart
+    plt.figure(figsize=(12, 6))
+    sns.barplot(data=df_melted, x="Field", y="Input Amount", hue="Input Type")
+
+    plt.title("Input Amount per Field (Grouped by Input Type)")
+    plt.xlabel("Field")
+    plt.ylabel("Amount (Kg/Ha)")
+    plt.legend(title="Input Type", bbox_to_anchor=(1.05, 1), loc='upper left')
     plt.tight_layout()
-    # plt.show()
+    plt.xticks(rotation=90)
     buf = io.BytesIO()
     plt.savefig(buf, format='png')
     plt.close()
@@ -83,12 +146,9 @@ def plotHistory(history_dict, guides):
     buf.close()
     res = {}
 
-    # res['image_url'] = upload_image_to_drive(image, str(uuid.uuid4())+".png")
-    plt.savefig("history_plot.png", format='png')
-    res['ai_summary'] = history_summary(history=history_dict, guides=guides)
-
+    res['image_url'] = upload_image_to_dropbox(image_stream=image, image_name=str(uuid.uuid4())+".png")
+    # plt.savefig(f"{chemical}_plot.png", format='png')
     return res
-    
 
 # def read_json_file(file_path):
 #     with open(file_path, 'r') as f:
